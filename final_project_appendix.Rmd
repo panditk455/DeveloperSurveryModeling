@@ -1,0 +1,602 @@
+---
+title: "Appendix"
+author: "Kritika and Aurelia"
+date: "June 4, 2026"
+output:
+  pdf_document:
+    toc: false
+    latex_engine: xelatex
+geometry: margin=1in
+header-includes:
+  - '\usepackage{float}'
+  - '\floatplacement{figure}{H}'
+  - '\usepackage{booktabs}'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 6, fig.height = 4, fig.align = "center")
+```
+
+
+# Packages
+
+```{r}
+library(tidyverse)
+library(VGAM)      
+library(ordinal)    
+library(MASS)       
+library(effects)    
+library(broom)       
+library(knitr)
+library(kableExtra)
+```
+
+---
+
+#  Load Data
+
+```{r}
+raw <- read.csv("data.csv", na.strings = c("NA", ""), stringsAsFactors = FALSE)
+dim(raw)
+```
+
+---
+
+# Data Cleaning
+
+## Select Relevant Variables
+
+```{r }
+df <- raw %>%
+  dplyr::select(ResponseId, JobSat, AISelect, YearsCodePro, EdLevel,
+                Employment, ConvertedCompYearly, RemoteWork, Country)
+summary(df)
+```
+
+## Response Variable: JobSat -> 3 Ordered Categories
+
+
+```{r }
+table(as.numeric(df$JobSat), useNA = "always")
+
+df <- df %>%
+  mutate(
+    JobSat_num = as.numeric(JobSat),
+    JobSat_cat = case_when(
+      JobSat_num <= 5  ~ "Low",
+      JobSat_num <= 7  ~ "Moderate",
+      JobSat_num <= 10 ~ "High",
+      TRUE             ~ NA_character_
+    ),
+    JobSat_cat = fct_relevel(JobSat_cat, "Low", "Moderate")  # High is last/highest
+  )
+
+table(df$JobSat_cat, useNA = "always")
+```
+
+## YearsCodePro: Recode Text Entries and Center
+
+```{r}
+unique(df$YearsCodePro[grepl("year", df$YearsCodePro, ignore.case = TRUE)])
+
+df <- df %>%
+  mutate(
+    YearsCodePro = case_when(
+      YearsCodePro == "Less than 1 year"   ~ "0.5",
+      YearsCodePro == "More than 50 years" ~ "50",
+      TRUE ~ YearsCodePro
+    ),
+    YearsCodePro = as.numeric(YearsCodePro)
+  )
+
+summary(df$YearsCodePro)
+mean(df$YearsCodePro, na.rm = TRUE)
+
+# Center around mean (19.2 years)
+df <- df %>% mutate(CYears = YearsCodePro - mean(YearsCodePro, na.rm = TRUE))
+```
+
+## Annual Compensation: Log-Transform and Center
+
+Salary is right-skewed with values up to $2M. Log-transforming  then center.
+
+```{r}
+sum(df$ConvertedCompYearly > 500000, na.rm = TRUE)  # 25 above $500k
+sum(df$ConvertedCompYearly > 1000000, na.rm = TRUE) # 9 above $1M
+
+df <- df %>% mutate(log_comp = log(ConvertedCompYearly))
+
+summary(df$log_comp)
+mean(df$log_comp, na.rm = TRUE)
+
+# Center around mean log-comp
+df <- df %>% mutate(Clog_comp = log_comp - mean(log_comp, na.rm = TRUE))
+```
+
+## Education Level: Collapsing and Level
+
+```{r}
+df <- df %>%
+  mutate(
+    EdLevel = case_when(
+      grepl("Bachelor", EdLevel)  ~ "Bachelor's",
+      grepl("Master",   EdLevel)  ~ "Master's",
+      grepl("Professional degree|Ph\\.D", EdLevel, ignore.case = TRUE) ~ "Professional/PhD",
+      grepl("Some college|Associate|Secondary|Primary|Something",
+            EdLevel, ignore.case = TRUE) ~ "No Degree",
+      TRUE ~ NA_character_
+    ),
+    EdLevel = fct_relevel(EdLevel, "No Degree", "Bachelor's", "Master's")
+  )
+
+table(df$EdLevel, useNA = "always")
+```
+
+## Employment Type: Simplifying
+
+```{r }
+df <- df %>%
+  mutate(
+    Employment = case_when(
+      grepl("Employed, full-time", Employment)  ~ "Full-time",
+      grepl("Independent contractor|freelancer|self-employed",
+            Employment, ignore.case = TRUE)     ~ "Freelance",
+      grepl("Student",      Employment, ignore.case = TRUE) ~ "Student",
+      grepl("part-time",    Employment, ignore.case = TRUE) ~ "Part-time",
+      grepl("Not employed", Employment, ignore.case = TRUE) ~ "Not employed",
+      TRUE ~ "Other"
+    ),
+    Employment = fct_relevel(Employment, "Full-time")
+  )
+
+table(df$Employment, useNA = "always")
+```
+
+## AI Tool Adoption
+
+```{r}
+df <- df %>%
+  mutate(
+    AISelect = case_when(
+      AISelect == "Yes"                     ~ "Uses AI",
+      AISelect == "No, but I plan to soon"  ~ "Plans to use",
+      AISelect == "No, and I don't plan to" ~ "Does not use",
+      TRUE ~ NA_character_
+    ),
+    AISelect = fct_relevel(AISelect, "Does not use", "Plans to use")
+  )
+
+table(df$AISelect, useNA = "always")
+```
+
+## Remote Work
+
+```{r}
+df <- df %>%
+  mutate(
+    RemoteWork = case_when(
+      RemoteWork == "In-person"                         ~ "In-person",
+      RemoteWork == "Hybrid (some remote, some in-person)" ~ "Hybrid",
+      RemoteWork == "Remote"                            ~ "Remote",
+      TRUE ~ NA_character_
+    ),
+    RemoteWork = fct_relevel(RemoteWork, "In-person", "Hybrid")
+  )
+
+table(df$RemoteWork, useNA = "always")
+```
+
+## Remove Invalid Country Entries
+
+```{r}
+df <- df %>% filter(!Country %in% c("Nomadic", ""))
+```
+
+##  Complete Case Analysis
+
+```{r}
+df_model <- df %>%
+  dplyr::select(ResponseId, JobSat_cat, AISelect, CYears, EdLevel,
+                Employment, Clog_comp, RemoteWork, Country) %>%
+  drop_na()
+
+cat("Original rows:     ", nrow(df), "\n")
+cat("Complete case rows:", nrow(df_model), "\n")
+cat("Rows dropped:      ", nrow(df) - nrow(df_model),
+    sprintf("(%.1f%%)\n", (nrow(df) - nrow(df_model)) / nrow(df) * 100))
+```
+
+## Final Dataset Summary
+
+```{r}
+summary(df_model)
+```
+
+---
+
+# Exploratory Data Analysis
+
+## Response: Distribution of Job Satisfaction
+
+```{r}
+table(df_model$JobSat_cat)
+```
+
+```{r}
+df_model %>%
+  count(JobSat_cat) %>%
+  mutate(pct = n / sum(n) * 100) %>%
+  ggplot(aes(x = JobSat_cat, y = pct, fill = JobSat_cat)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = sprintf("%.1f%%", pct)), vjust = -0.4, size = 3.5) +
+  scale_fill_manual(values = c("Low" = "#d73027", "Moderate" = "#fee090", "High" = "#4575b4")) +
+  labs(x = "Job Satisfaction", y = "Percent (%)") +
+  theme_bw() + theme(legend.position = "none")
+```
+
+## Cumulative Log Odds EDA: Categorical Predictors
+
+### AI Tool Adoption
+
+```{r}
+ai_lodds <- df_model %>%
+  group_by(AISelect) %>%
+  summarize(
+    prob1   = mean(JobSat_cat == "Low"),
+    lodds1  = log(prob1 / (1 - prob1)),
+    prob12  = mean(JobSat_cat %in% c("Low", "Moderate")),
+    lodds12 = log(prob12 / (1 - prob12))
+  )
+
+ai_lodds
+```
+
+```{r}
+ggplot(ai_lodds, aes(x = as.numeric(AISelect))) +
+  geom_line(aes(y = lodds1,  color = "logit(Low)")) +
+  geom_line(aes(y = lodds12, color = "logit(Low, Moderate)")) +
+  scale_x_continuous(breaks = 1:3, labels = levels(df_model$AISelect)) +
+  labs(x = "AI Tool Adoption", y = "Cumulative log odds", color = "Comparison") +
+  theme_bw()
+```
+
+### Education Level
+
+```{r}
+ed_lodds <- df_model %>%
+  group_by(EdLevel) %>%
+  summarize(
+    prob1   = mean(JobSat_cat == "Low"),
+    lodds1  = log(prob1 / (1 - prob1)),
+    prob12  = mean(JobSat_cat %in% c("Low", "Moderate")),
+    lodds12 = log(prob12 / (1 - prob12))
+  )
+
+ed_lodds
+```
+
+```{r}
+ggplot(ed_lodds, aes(x = as.numeric(EdLevel))) +
+  geom_line(aes(y = lodds1,  color = "logit(Low)")) +
+  geom_line(aes(y = lodds12, color = "logit(Low, Moderate)")) +
+  scale_x_continuous(breaks = 1:4, labels = levels(df_model$EdLevel)) +
+  labs(x = "Education Level", y = "Cumulative log odds", color = "Comparison") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 12, hjust = 1))
+```
+
+### Remote Work Status
+
+```{r}
+remote_lodds <- df_model %>%
+  group_by(RemoteWork) %>%
+  summarize(
+    prob1   = mean(JobSat_cat == "Low"),
+    lodds1  = log(prob1 / (1 - prob1)),
+    prob12  = mean(JobSat_cat %in% c("Low", "Moderate")),
+    lodds12 = log(prob12 / (1 - prob12))
+  )
+
+remote_lodds
+```
+
+```{r}
+ggplot(remote_lodds, aes(x = as.numeric(RemoteWork))) +
+  geom_line(aes(y = lodds1,  color = "logit(Low)")) +
+  geom_line(aes(y = lodds12, color = "logit(Low, Moderate)")) +
+  scale_x_continuous(breaks = 1:3, labels = levels(df_model$RemoteWork)) +
+  labs(x = "Work Arrangement", y = "Cumulative log odds", color = "Comparison") +
+  theme_bw()
+```
+
+## Cumulative Log Odds EDA: Quantitative Predictors
+
+Group respondents into 5 quantiles, compute mean predictor value and cumulative
+log odds per group. Check for linearity and parallel trends.
+
+### Years of Professional Experience
+
+```{r}
+exp_lodds <- df_model %>%
+  mutate(exp_grp = ntile(CYears, 5)) %>%
+  group_by(exp_grp) %>%
+  summarize(
+    mean_exp = mean(CYears),
+    prob1    = mean(JobSat_cat == "Low"),
+    lodds1   = log(prob1 / (1 - prob1)),
+    prob12   = mean(JobSat_cat %in% c("Low", "Moderate")),
+    lodds12  = log(prob12 / (1 - prob12))
+  )
+
+exp_lodds
+```
+
+```{r}
+ggplot(exp_lodds, aes(x = mean_exp)) +
+  geom_line(aes(y = lodds1,  color = "logit(Low)")) +
+  geom_line(aes(y = lodds12, color = "logit(Low, Moderate)")) +
+  geom_point(aes(y = lodds1,  color = "logit(Low)")) +
+  geom_point(aes(y = lodds12, color = "logit(Low, Moderate)")) +
+  labs(x = "Centered Years of Experience", y = "Cumulative log odds", color = "Comparison") +
+  theme_bw()
+```
+
+### Log Annual Compensation
+
+```{r}
+comp_lodds <- df_model %>%
+  mutate(comp_grp = ntile(Clog_comp, 5)) %>%
+  group_by(comp_grp) %>%
+  summarize(
+    mean_comp = mean(Clog_comp),
+    prob1     = mean(JobSat_cat == "Low"),
+    lodds1    = log(prob1 / (1 - prob1)),
+    prob12    = mean(JobSat_cat %in% c("Low", "Moderate")),
+    lodds12   = log(prob12 / (1 - prob12))
+  )
+
+comp_lodds
+```
+
+```{r}
+ggplot(comp_lodds, aes(x = mean_comp)) +
+  geom_line(aes(y = lodds1,  color = "logit(Low)")) +
+  geom_line(aes(y = lodds12, color = "logit(Low, Moderate)")) +
+  geom_point(aes(y = lodds1,  color = "logit(Low)")) +
+  geom_point(aes(y = lodds12, color = "logit(Low, Moderate)")) +
+  labs(x = "Centered Log Annual Compensation", y = "Cumulative log odds",
+       color = "Comparison") +
+  theme_bw()
+```
+
+## Country-Level Variation
+
+```{r}
+df_model %>%
+  group_by(Country) %>%
+  summarise(n = n(), pct_high = mean(JobSat_cat == "High") * 100) %>%
+  filter(n >= 20) %>%
+  slice_max(n, n = 20) %>%
+  ggplot(aes(x = reorder(Country, pct_high), y = pct_high)) +
+  geom_col(fill = "#4575b4") +
+  coord_flip() +
+  labs(x = NULL, y = "% High Job Satisfaction") +
+  theme_bw()
+```
+
+---
+
+# Modeling
+
+
+##  Null CLMM: Estimating ICC
+
+```{r}
+m0 <- clmm(JobSat_cat ~ 1 + (1 | Country), data = df_model, Hess = TRUE)
+summary(m0)
+
+var_u <- as.numeric(VarCorr(m0)$Country)
+icc   <- var_u / (var_u + pi^2 / 3)
+cat(sprintf("ICC: %.3f — %.1f%% of variation is between countries\n", icc, icc * 100))
+```
+
+## Main Effects Model (Model 1)
+
+```{r}
+m1 <- clmm(JobSat_cat ~ AISelect + CYears + EdLevel +
+              Employment + Clog_comp + RemoteWork + (1 | Country),
+            data = df_model, Hess = TRUE)
+summary(m1)
+```
+
+## Test Random Effect
+
+Comparing Model 1 (with country RE) to fixed-effects-only model via LRT.
+Boundary LRTß
+
+```{r}
+m1_fixed <- clm(JobSat_cat ~ AISelect + CYears + EdLevel +
+                  Employment + Clog_comp + RemoteWork,
+                data = df_model)
+
+lrt_obs <- as.numeric(2 * (logLik(m1) - logLik(m1_fixed)))
+lrt_obs
+# boundary-corrected p-value
+.5*(1 - pchisq(lrt_obs, 1)) + .5*(1 - pchisq(lrt_obs, 0))
+```
+
+## Proportional Odds Check
+
+Testing whether the proportional odds assumption holds for key predictors
+by fitting a partial proportional odds model (parallel = FALSE for AISelect).
+
+```{r}
+# Fixed effects partial PO model via VGAM for the PO test
+m1_vglm <- vglm(JobSat_cat ~ AISelect + CYears + EdLevel +
+                  Employment + Clog_comp + RemoteWork,
+                data = df_model, family = cumulative(parallel = TRUE))
+
+m1_partialPO <- vglm(JobSat_cat ~ AISelect + CYears + EdLevel +
+                       Employment + Clog_comp + RemoteWork,
+                     data = df_model,
+                     family = cumulative(parallel = FALSE ~ AISelect))
+
+lrtest(m1_partialPO, m1_vglm)  # H0: PO holds for AISelect
+data.frame(model = c("m1_vglm", "m1_partialPO"),
+           AIC   = c(AIC(m1_vglm), AIC(m1_partialPO)))
+```
+
+## Interaction Models
+
+### Model 2: AI × Experience
+
+```{r}
+m2 <- clmm(JobSat_cat ~ AISelect * CYears + EdLevel +
+              Employment + Clog_comp + RemoteWork + (1 | Country),
+            data = df_model, Hess = TRUE)
+summary(m2)
+anova(m1, m2)  # LRT: does interaction improve fit?
+```
+
+### Model 3: AI × Education
+
+```{r}
+m3 <- clmm(JobSat_cat ~ AISelect * EdLevel + CYears +
+              Employment + Clog_comp + RemoteWork + (1 | Country),
+            data = df_model, Hess = TRUE)
+summary(m3)
+anova(m1, m3)
+```
+
+## Model Comparison
+
+```{r}
+AIC(m0, m1, m2, m3)
+```
+
+## Final Model
+
+
+```{r}
+m_final <- m1   # update to m2 or m3 if interaction is significant
+
+coef(summary(m_final))
+confint(m_final)
+```
+
+## Effects Plot (via MASS::polr)
+
+```{r}
+df_model <- df_model %>%
+  mutate(across(where(is.factor), droplevels),
+         JobSat_ord = ordered(JobSat_cat, levels = c("Low", "Moderate", "High")))
+
+m_polr <- MASS::polr(JobSat_ord ~ AISelect + CYears + EdLevel +
+                       Employment + Clog_comp + RemoteWork,
+                     data = df_model, Hess = TRUE)
+
+# Reference row held at means / most common category
+ref_row <- data.frame(
+  AISelect   = factor("Uses AI",    levels = levels(df_model$AISelect)),
+  CYears     = 0,
+  EdLevel    = factor("Bachelor's", levels = levels(df_model$EdLevel)),
+  Employment = factor("Full-time",  levels = levels(df_model$Employment)),
+  Clog_comp  = 0,
+  RemoteWork = factor("Hybrid",     levels = levels(df_model$RemoteWork))
+)
+
+eff_plot <- function(var, vals) {
+  nd <- ref_row[rep(1, length(vals)), ]
+  nd[[var]] <- vals
+  rownames(nd) <- NULL
+  cbind(nd[var],
+        as.data.frame(predict(m_polr, newdata = nd, type = "probs"))) %>%
+    pivot_longer(-all_of(var), names_to = "Satisfaction", values_to = "Prob") %>%
+    mutate(Satisfaction = factor(Satisfaction, c("Low", "Moderate", "High")))
+}
+
+# AISelect
+eff_plot("AISelect",
+         factor(levels(df_model$AISelect), levels = levels(df_model$AISelect))) %>%
+  ggplot(aes(x = AISelect, y = Prob, color = Satisfaction, group = Satisfaction)) +
+  geom_line() + geom_point(size = 2) +
+  labs(x = "AI Tool Adoption", y = "P(Job Satisfaction)") + theme_bw()
+
+# RemoteWork
+eff_plot("RemoteWork",
+         factor(levels(df_model$RemoteWork), levels = levels(df_model$RemoteWork))) %>%
+  ggplot(aes(x = RemoteWork, y = Prob, color = Satisfaction, group = Satisfaction)) +
+  geom_line() + geom_point(size = 2) +
+  labs(x = "Remote Work Status", y = "P(Job Satisfaction)") + theme_bw()
+
+# CYears
+eff_plot("CYears",
+         seq(min(df_model$CYears), max(df_model$CYears), length.out = 50)) %>%
+  ggplot(aes(x = CYears, y = Prob, color = Satisfaction)) +
+  geom_line() +
+  labs(x = "Centered Years of Experience", y = "P(Job Satisfaction)") + theme_bw()
+```
+
+```{r}
+expand.grid(
+  AISelect   = factor(levels(df_model$AISelect),   levels = levels(df_model$AISelect)),
+  RemoteWork = factor(levels(df_model$RemoteWork), levels = levels(df_model$RemoteWork)),
+  CYears = 0,
+  EdLevel    = factor("Bachelor's", levels = levels(df_model$EdLevel)),
+  Employment = factor("Full-time",  levels = levels(df_model$Employment)),
+  Clog_comp  = 0
+) %>%
+  cbind(as.data.frame(predict(m_polr, newdata = ., type = "probs"))) %>%
+  pivot_longer(c("Low", "Moderate", "High"),
+               names_to = "Satisfaction", values_to = "Prob") %>%
+  mutate(Satisfaction = factor(Satisfaction, c("Low", "Moderate", "High"))) %>%
+  ggplot(aes(x = AISelect, y = Prob, fill = Satisfaction)) +
+  geom_col(position = "stack") +
+  facet_wrap(~ RemoteWork) +
+  scale_fill_manual(
+    values = c("Low" = "#d73027", "Moderate" = "#fee090", "High" = "#4575b4")) +
+  labs(x = "AI Tool Adoption", y = "P(Job Satisfaction)") + theme_bw()
+```
+
+## Diagnostics
+
+
+```{r}
+library(sure)
+set.seed(123)
+surr_resids <- sure::resids(m_polr, nsim = 50)
+
+# Q-Q plot (replaces autoplot — sure's S3 method conflicts with ggplot2 3.x)
+qqnorm(surr_resids,
+       main = "Normal Q-Q Plot of Surrogate Residuals",
+       ylab = "Surrogate Residuals")
+qqline(surr_resids, col = "red", lty = 2)
+```
+
+```{r}
+par(mfrow = c(1, 2))
+plot(df_model$CYears, surr_resids,
+     xlab = "Centered Years of Experience", ylab = "Surrogate Residuals")
+abline(h = 0, col = "red", lty = 2)
+
+plot(df_model$Clog_comp, surr_resids,
+     xlab = "Centered Log Compensation", ylab = "Surrogate Residuals")
+abline(h = 0, col = "red", lty = 2)
+par(mfrow = c(1, 1))
+```
+
+---
+
+# Final Model Results Table
+
+```{r}
+coef_out <- as.data.frame(coef(summary(m_final)))
+ci_out   <- confint(m_final)
+
+results  <- cbind(coef_out, ci_out)
+kable(round(results, 3),
+      caption = "Table 1: Final model estimates, standard errors, and 95% CIs.",
+      col.names = c("Estimate", "Std. Error", "z-value", "p-value", "2.5%", "97.5%")) %>%
+  kable_styling(latex_options = c("hold_position", "striped"), font_size = 9)
+```

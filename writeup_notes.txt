@@ -1,0 +1,164 @@
+SOME WRITEUP
+
+DATA AND METHODS
+
+We analyzed data from the 2023 Stack Overflow Developer Survey, starting with
+10,259 respondents. We selected nine variables of interest: job satisfaction,
+AI tool adoption, years of professional experience, annual compensation,
+education level, employment type, remote work status, and country. Job
+satisfaction (originally rated 0-10) was recoded into three ordered categories,
+Low (0-5), Moderate (6-7), and High (8-10), making it suitable for an ordinal
+regression framework. Annual compensation was right-skewed with values reaching
+$2M, so we applied a log transformation before centering at its mean (log-scale
+mean of about 10.87). Years of professional experience was also centered at its
+mean of approximately 11 years so that model intercepts and threshold estimates
+reflect a developer at average experience rather than at zero years. Two text
+values ("Less than 1 year" and "More than 50 years") were recoded to 0.5 and 50
+before numeric conversion. Education was collapsed from many detailed categories
+into four groups: No Degree, Bachelor's, Master's, and Professional/PhD.
+Employment was similarly collapsed into Full-time, Freelance, Part-time,
+Student, and Not employed. After applying a complete case analysis across all
+selected variables, we retained 4,129 respondents out of 10,253 (a 59.7%
+reduction, driven largely by missing compensation data).
+
+Because respondents were clustered within 125 countries, we fit a Cumulative
+Link Mixed Model (CLMM) using the ordinal package in R. The CLMM extends the
+proportional odds logistic regression model by adding a country-level random
+intercept, which allows the baseline log-odds of satisfaction to shift up or
+down for each country. The model assumes that for any predictor x, the
+cumulative log-odds of being in category j or below follows the form:
+logit(P(Y <= j | x)) = threshold_j - (beta * x + u_country), where u_country
+is the country random effect drawn from a normal distribution with mean zero
+and estimated variance. This parameterization means a positive beta coefficient
+corresponds to higher predicted satisfaction (higher odds of being in a higher
+category). The model was fitted by Laplace approximation.
+
+
+EXPLORATORY DATA ANALYSIS
+
+Among the 4,129 respondents in the analytic sample, about half (48.2%) reported
+high job satisfaction, roughly a third (32.3%) reported moderate satisfaction,
+and just under one in five (19.5%) reported low satisfaction, so the response
+is noticeably skewed toward higher satisfaction. To check whether the
+proportional odds assumption was plausible before modeling, we computed
+cumulative log odds empirically for each predictor group. Specifically, we
+computed logit(P(Y = Low)) and logit(P(Y <= Moderate)) for each level of the
+categorical predictors. Under proportional odds, those two lines should be
+approximately parallel (shifted vertically by the same constant across all
+categories). The plots showed roughly parallel lines across AI adoption groups,
+education levels, and remote work categories, which supports this assumption.
+For the continuous predictors (centered experience and log compensation), we
+grouped respondents into five quantile bins and plotted cumulative log odds
+against the bin mean. Both showed decreasing log odds as the predictor
+increased, and the two lines remained nearly parallel, consistent with linearity
+and proportional odds on the log-odds scale.
+
+A bar chart of the proportion of respondents reporting high satisfaction,
+grouped by country (top 20 countries by sample size), showed modest variation
+across countries, with rates generally ranging from about 40% to 60%. Canada,
+Israel, and Switzerland appeared near the top while India was toward the lower
+end. However, fitting a null CLMM with only a country random intercept and no
+predictors gave an estimated country-level variance of 0.009, corresponding to
+an intraclass correlation coefficient (ICC) of approximately 0.003. This means
+only 0.3% of the total variation in job satisfaction is attributable to
+country-level differences, indicating that respondents within the same country
+are barely more similar to each other than respondents from different countries.
+This finding suggested that while a random effect for country is technically
+justified (it keeps the standard errors honest), its practical contribution to
+explaining satisfaction is very small.
+
+
+MODELING: RANDOM EFFECT AND PROPORTIONAL ODDS
+
+Before fitting the full model, we tested two key assumptions. First, we assessed
+whether the country random intercept was needed. We fit a fixed-effects-only
+cumulative link model (CLM, no random effect) with the same predictors and
+compared it to the CLMM using a likelihood ratio test. Because a random effect
+variance is constrained to be non-negative, the null value (variance = 0) sits
+on the boundary of the parameter space, which means the standard chi-square
+p-value is anti-conservative. We applied the standard boundary correction:
+multiplying the one-sided chi-square p-value by 0.5 and adding 0.5 times the
+probability at zero. The observed LRT statistic was 3.06, giving a
+boundary-corrected p-value of 0.040. This is marginal but provides enough
+evidence to retain the random effect, and doing so ensures that the standard
+errors of the fixed effects correctly account for country-level clustering.
+Second, we tested the proportional odds assumption for AI tool adoption,
+which was our primary predictor of interest, using the VGAM package. We fit a
+partial proportional odds model that allowed the AI adoption effect to differ
+across the two cumulative thresholds (Low vs. Moderate+High, and Low+Moderate
+vs. High), then compared it to the standard proportional odds model via a
+likelihood ratio test. The test statistic was 2.45 on 2 degrees of freedom
+(p = 0.29), and the partial model had a higher AIC (8502.7 vs. 8501.1),
+providing no evidence against the proportional odds assumption for AI adoption.
+We therefore proceeded with the full proportional odds specification.
+
+
+MODEL SELECTION 
+
+Starting from the main effects CLMM (Model 1), we considered two interaction
+models: AI adoption interacted with years of experience (Model 2) and AI
+adoption interacted with education level (Model 3). The rationale was that the
+benefit of using AI tools might be stronger for less experienced developers
+(who rely on AI more as a productivity aid) or might vary by education. Neither
+interaction improved model fit. The AI-by-experience interaction produced an
+LRT statistic of 2.23 on 2 degrees of freedom (p = 0.33, delta AIC = +1.8),
+and the AI-by-education interaction produced an LRT of 4.94 on 6 degrees of
+freedom (p = 0.55, delta AIC = +7.1). Model 1 had the lowest AIC (8500.05)
+across all four models including the null (AIC = 8554.93), confirming it as the
+best-fitting and most parsimonious specification.
+
+In the final model (Model 1), four predictors were statistically significant.
+Using AI tools was associated with a 0.20 increase in the cumulative log-odds
+of being in a higher satisfaction category compared to not using AI (p = 0.004,
+95% CI: 0.064 to 0.346), holding all other predictors constant. Planning to use
+AI but not yet doing so showed no significant difference from non-users
+(beta = -0.046, p = 0.64), suggesting the benefit is tied to actual use rather
+than intention. Each additional centered year of professional experience was
+associated with a 0.018 increase in cumulative log-odds of higher satisfaction
+(p < 0.001, 95% CI: 0.011 to 0.026). A one-unit increase in centered log annual
+compensation was associated with a 0.094 increase in cumulative log-odds
+(p = 0.0008, 95% CI: 0.039 to 0.149). Working fully remotely was associated
+with a 0.25 higher cumulative log-odds of satisfaction compared to working
+in-person (p = 0.006, 95% CI: 0.070 to 0.421), while hybrid work showed no
+significant difference from in-person (beta = 0.136, p = 0.12). Education level
+and employment type were not significant after adjusting for the other
+predictors. The estimated country random effect variance was 0.011
+(SD = 0.104), confirming it remained small but nonzero after adding the fixed
+effects. The two estimated threshold parameters were: Low|Moderate = -1.23 and
+Moderate|High = 0.28, meaning that at average values of all predictors, the
+log-odds of being Low versus Moderate or High is -1.23 (about 22% probability
+of Low), and the log-odds of being Low or Moderate versus High is 0.28 (about
+57% probability of High or below, so roughly 43% probability of High).
+
+
+DIAGNOSTICS 
+
+To assess model fit, we computed surrogate residuals using the sure package
+applied to the equivalent fixed-effects proportional odds model (MASS::polr),
+which has the same coefficient structure as the CLMM but without the random
+intercept. Surrogate residuals extend the concept of continuous residuals to
+ordinal models by replacing each observed category with a random draw from the
+corresponding interval of the latent continuous distribution implied by the
+model. Under a correctly specified model, these residuals should follow a
+standard normal distribution and show no systematic pattern against the
+predictors. The normal Q-Q plot followed the reference line closely through the
+center of the distribution, with mild deviations at both tails, which is
+typical behavior for ordinal models with only three categories and limited
+probability mass in the tails. Plots of surrogate residuals against centered
+years of experience and centered log compensation showed horizontal scatter
+centered at zero with no curvature, supporting the linearity assumption for
+both continuous predictors.
+
+Overall, the analysis supports four clear conclusions. First, developers who
+actively use AI tools report higher job satisfaction than those who do not,
+and this effect is not moderated by experience or education level. Second,
+satisfaction increases with both experience and compensation, consistent with
+the idea that career progress and financial reward independently contribute to
+wellbeing at work. Third, remote work is associated with higher satisfaction
+relative to in-person work, with no statistically distinguishable difference
+for hybrid arrangements. Fourth, country of residence has a negligible effect
+on job satisfaction once individual-level characteristics are accounted for,
+meaning the drivers of developer satisfaction appear to be largely universal
+rather than country-specific. The proportional odds and linearity assumptions
+were both supported empirically, lending credibility to the cumulative logit
+framework used throughout.
